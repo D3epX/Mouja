@@ -46,7 +46,7 @@ var (
 			Foreground(lipgloss.Color("#e0f0ff")).
 			Bold(true).Padding(0, 1)
 
-	cardStyle = lipgloss.NewStyle().
+	cardBase = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#1a5276")).
 			Padding(0, 1).
@@ -143,7 +143,7 @@ func waveTicker() tea.Cmd {
 
 func fetchWeather(lat, lon float64) (*Weather, error) {
 	url := fmt.Sprintf(
-		"https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto&forecast_days=1",
+		"https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto&forecast_days=1",
 		lat, lon,
 	)
 	resp, err := http.Get(url)
@@ -167,7 +167,7 @@ func fetchWeather(lat, lon float64) (*Weather, error) {
 
 func fetchMarine(lat, lon float64) (*Marine, error) {
 	url := fmt.Sprintf(
-		"https://marine-api.open-meteo.com/v1/marine?latitude=%.2f&longitude=%.2f&current=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,sea_surface_temperature&timezone=auto&forecast_days=1",
+		"https://marine-api.open-meteo.com/v1/marine?latitude=%.4f&longitude=%.4f&current=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,sea_surface_temperature&timezone=auto&forecast_days=1",
 		lat, lon,
 	)
 	resp, err := http.Get(url)
@@ -252,9 +252,9 @@ func windDesc(s float64) string {
 	case s < 15:
 		return "Light breeze"
 	case s < 25:
-		return "Moderate wind"
+		return "Moderate"
 	case s < 35:
-		return "Strong wind"
+		return "Strong"
 	default:
 		return "Stormy"
 	}
@@ -332,8 +332,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.SetValue("")
 				parts := parseLoc(val)
 				if len(parts) >= 2 {
-					m.lat, _ = strconv.ParseFloat(parts[0], 64)
-					m.lon, _ = strconv.ParseFloat(parts[1], 64)
+					if v, err := strconv.ParseFloat(parts[0], 64); err == nil {
+						m.lat = v
+					}
+					if v, err := strconv.ParseFloat(parts[1], 64); err == nil {
+						m.lon = v
+					}
 					if len(parts) >= 3 {
 						m.loc = strings.Join(parts[2:], " ")
 					} else {
@@ -452,28 +456,26 @@ func renderWave(frame int, width int) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(waveColors[frame])).Render(b.String())
 }
 
-func renderCard(title string, lines []string, width int) string {
+func renderCard(title string, lines []string, totalW int) string {
 	var b strings.Builder
 	b.WriteString(keyStyle.Render(title))
 	b.WriteString("\n")
 	for _, l := range lines {
+		b.WriteString("  ")
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
-	return cardStyle.Width(width).Render(b.String())
+	return cardBase.Width(totalW).Render(b.String())
 }
 
-func line(label, value, desc, style string) string {
+func line(label, value, desc, color string) string {
 	l := labelStyle.Render(label)
-	v := lipgloss.NewStyle().Foreground(lipgloss.Color(style)).Render(value)
+	v := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(value)
 	d := ""
 	if desc != "" {
 		d = descStyle.Render(" · " + desc)
 	}
-	if desc != "" {
-		return l + " " + v + d
-	}
-	return l + " " + v
+	return l + "  " + v + d
 }
 
 func (m model) View() string {
@@ -481,21 +483,24 @@ func (m model) View() string {
 	if availW < 60 {
 		availW = 60
 	}
+	if m.height < 20 {
+		m.height = 20
+	}
 
 	waveLine := renderWave(m.waveFrame, availW)
 	header := headerStyle.Width(availW).Render("🌊  Mouja — " + m.loc)
 
 	if m.showInput {
-		m.input.Width = availW - 10
+		m.input.Width = availW - 14
 		inputBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#5dade2")).
 			Padding(1, 2).
 			Background(lipgloss.Color("#0a1628")).
-			Width(availW - 6).
+			Width(availW - 4).
 			Render(
-				keyStyle.Render("📍 Change Location")+"\n\n"+
-					m.input.View()+"\n\n"+
+				keyStyle.Render("📍 Change Location") + "\n\n" +
+					m.input.View() + "\n\n" +
 					infoStyle.Render("Enter: lat, lon, name  ·  Esc to cancel"),
 			)
 		return lipgloss.JoinVertical(lipgloss.Center, header, waveLine, "", inputBox)
@@ -507,24 +512,24 @@ func (m model) View() string {
 			BorderForeground(lipgloss.Color("#ff4444")).
 			Padding(1, 2).
 			Background(lipgloss.Color("#1a0a0a")).
-			Width(availW - 6).
+			Width(availW - 4).
 			Render(
-				errStyle.Render("✗ Connection Error")+"\n\n"+
-					infoStyle.Render(m.err.Error())+"\n\n"+
-					labelStyle.Render("[r] retry  ·  [l] change location  ·  [q] quit"),
+				errStyle.Render("✗ Connection Error") + "\n\n" +
+					infoStyle.Render(m.err.Error()) + "\n\n" +
+					infoStyle.Render("[r] retry  ·  [l] location  ·  [q] quit"),
 			)
 		return lipgloss.JoinVertical(lipgloss.Center, header, waveLine, "", errBox)
 	}
 
 	if m.loading || m.weather == nil || m.marine == nil {
-		spinnerView := lipgloss.NewStyle().Foreground(lipgloss.Color("#5dade2")).Render(m.spinner.View())
+		s := lipgloss.NewStyle().Foreground(lipgloss.Color("#5dade2")).Render(m.spinner.View())
 		loadingBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#1a5276")).
 			Padding(1, 2).
 			Background(lipgloss.Color("#0a1628")).
-			Width(availW - 6).
-			Render(spinnerView + "  " + labelStyle.Render("Fetching beach data..."))
+			Width(availW - 4).
+			Render(s + "  " + infoStyle.Render("Fetching beach data..."))
 		return lipgloss.JoinVertical(lipgloss.Center, header, waveLine, "", loadingBox)
 	}
 
@@ -546,8 +551,7 @@ func (m model) View() string {
 		Foreground(lipgloss.Color(ratingColor)).
 		Render(fmt.Sprintf("%s  %s", ratingEmoji, rating))
 
-	pad := 1
-	cardContentW := (availW-pad)/2 - 2
+	cardTotalW := (availW-1)/2 - 2
 
 	weatherLines := []string{
 		line("Temperature", fmtVal(w.Current.Temp, "°C", 1), tempDesc(w.Current.Temp), "#ff6b6b"),
@@ -555,7 +559,7 @@ func (m model) View() string {
 		line("Wind", fmtVal(w.Current.WindSpeed, " km/h", 1)+" "+wdStr, windDesc(w.Current.WindSpeed), "#aed581"),
 		line("Humidity", fmtVal(w.Current.Humidity, "%", 0), humidDesc(w.Current.Humidity), "#48c9b0"),
 	}
-	weatherCard := renderCard("☀️  Weather", weatherLines, cardContentW)
+	weatherCard := renderCard("☀️  Weather", weatherLines, cardTotalW)
 
 	marineLines := []string{
 		line("Water", fmtVal(mar.Current.WaterTemp, "°C", 1), waterTempDesc(mar.Current.WaterTemp), "#4fc3f7"),
@@ -564,7 +568,7 @@ func (m model) View() string {
 		line("Swell", fmt.Sprintf("%.2fm %s", mar.Current.SwellHeight, swellDirStr), waveDesc(mar.Current.SwellHeight), "#5dade2"),
 		line("Swell per.", fmtVal(mar.Current.SwellPeriod, "s", 1), periodDesc(mar.Current.SwellPeriod), "#e0f0ff"),
 	}
-	marineCard := renderCard("🌊  Marine", marineLines, cardContentW)
+	marineCard := renderCard("🌊  Marine", marineLines, cardTotalW)
 
 	maxT := fmtVal(safeF64(w.Daily.Max, 0), "°C", 1)
 	minT := fmtVal(safeF64(w.Daily.Min, 0), "°C", 1)
@@ -575,20 +579,22 @@ func (m model) View() string {
 		line("Min", minT, "", "#ff6b6b"),
 		line("Rain", prec, precipDesc(safeF64(w.Daily.Prec, 0)), "#e0f0ff"),
 	}
-	forecastCard := renderCard("📅  Forecast", forecastLines, cardContentW)
+	forecastCard := renderCard("📅  Forecast", forecastLines, cardTotalW)
 
 	infoLines := []string{
 		line("Location", m.loc, "", "#e0f0ff"),
-		line("Coords", fmt.Sprintf("%.2f°N, %.2f°E", m.lat, m.lon), "", "#e0f0ff"),
+		line("Coords", fmt.Sprintf("%.2fN %.2fE", m.lat, m.lon), "", "#e0f0ff"),
 		"",
 		infoStyle.Render("[r] refresh  [l] location  [q] quit"),
 	}
-	infoCard := renderCard("ℹ️  Controls", infoLines, cardContentW)
+	infoCard := renderCard("ℹ️  Controls", infoLines, cardTotalW)
 
-	topRow := lipgloss.JoinHorizontal(lipgloss.Top, weatherCard, strings.Repeat(" ", pad), marineCard)
-	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, forecastCard, strings.Repeat(" ", pad), infoCard)
+	gap := " "
+	topRow := lipgloss.JoinHorizontal(lipgloss.Top, weatherCard, gap, marineCard)
+	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, forecastCard, gap, infoCard)
 
 	body := lipgloss.JoinVertical(lipgloss.Center,
+		"",
 		statusLine,
 		"",
 		topRow,
