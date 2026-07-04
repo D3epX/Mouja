@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,26 +25,41 @@ var wmoCodes = map[int]string{
 	95: "Thunderstorm", 96: "Thunderstorm w/ hail", 99: "Thunderstorm w/ heavy hail",
 }
 
+var wavePatterns = []string{
+	"  ~   ~   ~  ",
+	"   ~   ~   ~ ",
+	"    ~   ~   ~",
+	"   ~   ~   ~ ",
+	"  ~   ~   ~  ",
+	" ~   ~   ~   ",
+}
+
+var waveColors = []string{
+	"#1a5276", "#1f6da0", "#2980b9", "#3498db",
+	"#5dade2", "#85c1e9", "#aed6f1", "#85c1e9",
+}
+
 var (
 	headerStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#1a3a5c")).
+			Background(lipgloss.Color("#0d2137")).
 			Foreground(lipgloss.Color("#e0f0ff")).
 			Bold(true).Padding(0, 1)
-	statusStyle = lipgloss.NewStyle().
-			Bold(true).
-			Padding(0, 2).
-			Height(1)
+
 	cardStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#2a5a8c")).
+			BorderForeground(lipgloss.Color("#1a5276")).
 			Padding(0, 1).
-			Background(lipgloss.Color("#0f1f35"))
-	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8ab4e8"))
+			Background(lipgloss.Color("#0a1628"))
+
+	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7fa8c9"))
 	valStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#e0f0ff"))
 	tempStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b"))
 	waterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4fc3f7"))
-	waveStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#81d4fa"))
+	waveStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#5dade2"))
 	windStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#aed581"))
+	humidStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#48c9b0"))
+	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")).Bold(true)
+	infoStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#5d7fa0"))
 )
 
 type Weather struct {
@@ -55,8 +71,8 @@ type Weather struct {
 		WindDir    float64 `json:"wind_direction_10m"`
 	} `json:"current"`
 	Daily struct {
-		Max []float64 `json:"temperature_2m_max"`
-		Min []float64 `json:"temperature_2m_min"`
+		Max  []float64 `json:"temperature_2m_max"`
+		Min  []float64 `json:"temperature_2m_min"`
 		Prec []float64 `json:"precipitation_sum"`
 	} `json:"daily"`
 }
@@ -73,26 +89,28 @@ type Marine struct {
 	} `json:"current"`
 }
 
+type waveTickMsg struct{}
 type dataLoadedMsg struct {
 	w   *Weather
 	m   *Marine
 	lat float64
 	lon float64
 }
-
 type errMsg struct{ err error }
 
 type model struct {
-	loading bool
-	weather *Weather
-	marine  *Marine
-	err     error
-	spinner spinner.Model
-	width   int
-	height  int
-	lat     float64
-	lon     float64
-	loc     string
+	loading   bool
+	weather   *Weather
+	marine    *Marine
+	err       error
+	spinner   spinner.Model
+	width     int
+	height    int
+	lat       float64
+	lon       float64
+	loc       string
+	waveFrame int
+	waveDir   int
 }
 
 func safeF64(vals []float64, idx int) float64 {
@@ -104,8 +122,14 @@ func safeF64(vals []float64, idx int) float64 {
 
 func initialModel(lat, lon float64, loc string) model {
 	s := spinner.New()
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#8ab4e8"))
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#5dade2"))
 	return model{loading: true, spinner: s, lat: lat, lon: lon, loc: loc}
+}
+
+func waveTicker() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+		return waveTickMsg{}
+	})
 }
 
 func fetchWeather(lat, lon float64) (*Weather, error) {
@@ -115,16 +139,19 @@ func fetchWeather(lat, lon float64) (*Weather, error) {
 	)
 	resp, err := http.Get(url)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("network error: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read error: %w", err)
 	}
 	var w Weather
 	if err := json.Unmarshal(body, &w); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse error: %w", err)
 	}
 	return &w, nil
 }
@@ -136,16 +163,19 @@ func fetchMarine(lat, lon float64) (*Marine, error) {
 	)
 	resp, err := http.Get(url)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("network error: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read error: %w", err)
 	}
 	var m Marine
 	if err := json.Unmarshal(body, &m); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse error: %w", err)
 	}
 	return &m, nil
 }
@@ -179,7 +209,7 @@ func fmtVal(v float64, suffix string, decimals int) string {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, fetchData(m.lat, m.lon))
+	return tea.Batch(m.spinner.Tick, fetchData(m.lat, m.lon), waveTicker())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -217,12 +247,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case waveTickMsg:
+		m.waveFrame = (m.waveFrame + 1) % len(wavePatterns)
+		return m, waveTicker()
 	}
 
 	return m, nil
 }
 
-func ratingText(waveH, windS, precip float64) (string, string) {
+func ratingText(waveH, windS, precip float64) (string, string, string) {
 	score := 0
 	if waveH < 0.5 {
 		score += 3
@@ -246,12 +280,26 @@ func ratingText(waveH, windS, precip float64) (string, string) {
 
 	switch {
 	case score >= 6:
-		return "🏖️  Great", "#00ff00"
+		return "Great", "#00ff00", "🏖️"
 	case score >= 4:
-		return "👍  Okay", "#ffff00"
+		return "Okay", "#ffff00", "👍"
 	default:
-		return "😞  Bad", "#ff0000"
+		return "Bad", "#ff0000", "😞"
 	}
+}
+
+func renderWave(waveFrame int, width int) string {
+	if width < 20 {
+		return ""
+	}
+	pat := wavePatterns[waveFrame]
+	repeat := width / len(pat)
+	var b strings.Builder
+	for i := 0; i < repeat; i++ {
+		b.WriteString(pat)
+	}
+	b.WriteString(pat[:width%len(pat)])
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(waveColors[waveFrame])).Render(b.String())
 }
 
 func renderCard(title string, lines []string, width int) string {
@@ -268,16 +316,51 @@ func renderCard(title string, lines []string, width int) string {
 
 func (m model) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("Error: %v\n\nPress r to retry, q to quit", m.err)
+		availW := m.width
+		if availW < 60 {
+			availW = 60
+		}
+		waveLine := renderWave(m.waveFrame, availW)
+		header := headerStyle.Width(availW).Render("🌊  Mouja — " + m.loc)
+		errBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#ff4444")).
+			Padding(1, 2).
+			Background(lipgloss.Color("#1a0a0a")).
+			Width(availW - 6).
+			Render(
+				errStyle.Render("✗ Connection Error") + "\n\n" +
+					infoStyle.Render(m.err.Error()) + "\n\n" +
+					labelStyle.Render("Press [r] to retry  ·  [q] to quit"),
+			)
+		return lipgloss.JoinVertical(lipgloss.Center,
+			header,
+			waveLine,
+			"",
+			errBox,
+		)
 	}
 
 	if m.loading || m.weather == nil || m.marine == nil {
-		spinnerView := lipgloss.NewStyle().Foreground(lipgloss.Color("#8ab4e8")).Render(m.spinner.View())
+		availW := m.width
+		if availW < 60 {
+			availW = 60
+		}
+		waveLine := renderWave(m.waveFrame, availW)
+		header := headerStyle.Width(availW).Render("🌊  Mouja — " + m.loc)
+		spinnerView := lipgloss.NewStyle().Foreground(lipgloss.Color("#5dade2")).Render(m.spinner.View())
+		loadingBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#1a5276")).
+			Padding(1, 2).
+			Background(lipgloss.Color("#0a1628")).
+			Width(availW - 6).
+			Render(spinnerView + "  " + labelStyle.Render("Fetching beach data..."))
 		return lipgloss.JoinVertical(lipgloss.Center,
-			"\n\n\n",
-			headerStyle.Width(60).Render("🌊 Beach Status — "+m.loc),
-			"\n",
-			spinnerView+" Loading...",
+			header,
+			waveLine,
+			"",
+			loadingBox,
 		)
 	}
 
@@ -293,8 +376,11 @@ func (m model) View() string {
 	waveDirStr := windDir(mar.Current.WaveDir)
 	swellDirStr := windDir(mar.Current.SwellDir)
 
-	rating, color := ratingText(mar.Current.WaveHeight, w.Current.WindSpeed, safeF64(w.Daily.Prec, 0))
-	statusLine := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(rating)
+	rating, ratingColor, ratingEmoji := ratingText(mar.Current.WaveHeight, w.Current.WindSpeed, safeF64(w.Daily.Prec, 0))
+	statusLine := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(ratingColor)).
+		Render(fmt.Sprintf("%s  %s", ratingEmoji, rating))
 
 	availW := m.width
 	if availW < 60 {
@@ -304,19 +390,19 @@ func (m model) View() string {
 	cardW := (availW - pad*3) / 2
 
 	weatherLines := []string{
-		labelStyle.Render("Temperature:") + " " + tempStyle.Render(fmtVal(w.Current.Temp, "°C", 1)),
-		labelStyle.Render("Condition:") + "   " + valStyle.Render(cond),
-		labelStyle.Render("Wind:") + "        " + windStyle.Render(fmtVal(w.Current.WindSpeed, " km/h", 1)+" "+wdStr),
-		labelStyle.Render("Humidity:") + "    " + valStyle.Render(fmtVal(w.Current.Humidity, "%", 0)),
+		labelStyle.Render("Temperature") + "  " + tempStyle.Render(fmtVal(w.Current.Temp, "°C", 1)),
+		labelStyle.Render("Condition") + "    " + valStyle.Render(cond),
+		labelStyle.Render("Wind") + "         " + windStyle.Render(fmtVal(w.Current.WindSpeed, " km/h", 1)+" "+wdStr),
+		labelStyle.Render("Humidity") + "     " + humidStyle.Render(fmtVal(w.Current.Humidity, "%", 0)),
 	}
 	weatherCard := renderCard("☀️  Weather", weatherLines, cardW)
 
 	marineLines := []string{
-		labelStyle.Render("Water Temp:") + "  " + waterStyle.Render(fmtVal(mar.Current.WaterTemp, "°C", 1)),
-		labelStyle.Render("Wave Height:") + " " + waveStyle.Render(fmt.Sprintf("%.2fm %s", mar.Current.WaveHeight, waveDirStr)),
-		labelStyle.Render("Wave Period:") + " " + valStyle.Render(fmtVal(mar.Current.WavePeriod, "s", 1)),
-		labelStyle.Render("Swell Height:") + " " + waveStyle.Render(fmt.Sprintf("%.2fm %s", mar.Current.SwellHeight, swellDirStr)),
-		labelStyle.Render("Swell Period:") + "" + valStyle.Render(fmtVal(mar.Current.SwellPeriod, "s", 1)) + " " + swellDirStr,
+		labelStyle.Render("Water") + "        " + waterStyle.Render(fmtVal(mar.Current.WaterTemp, "°C", 1)),
+		labelStyle.Render("Waves") + "        " + waveStyle.Render(fmt.Sprintf("%.2fm %s", mar.Current.WaveHeight, waveDirStr)),
+		labelStyle.Render("Wave Period") + "  " + valStyle.Render(fmtVal(mar.Current.WavePeriod, "s", 1)),
+		labelStyle.Render("Swell") + "        " + waveStyle.Render(fmt.Sprintf("%.2fm %s", mar.Current.SwellHeight, swellDirStr)),
+		labelStyle.Render("Swell Period") + "" + valStyle.Render(fmtVal(mar.Current.SwellPeriod, "s", 1)),
 	}
 	marineCard := renderCard("🌊  Marine", marineLines, cardW)
 
@@ -325,25 +411,26 @@ func (m model) View() string {
 	prec := fmtVal(safeF64(w.Daily.Prec, 0), "mm", 1)
 
 	forecastLines := []string{
-		labelStyle.Render("Max Temp:") + "      " + tempStyle.Render(maxT),
-		labelStyle.Render("Min Temp:") + "      " + tempStyle.Render(minT),
-		labelStyle.Render("Precipitation:") + " " + valStyle.Render(prec),
+		labelStyle.Render("Max") + "           " + tempStyle.Render(maxT),
+		labelStyle.Render("Min") + "           " + tempStyle.Render(minT),
+		labelStyle.Render("Rain") + "          " + valStyle.Render(prec),
 	}
 	forecastCard := renderCard("📅  Forecast", forecastLines, cardW)
 
 	infoLines := []string{
-		labelStyle.Render("Location:") + "  " + valStyle.Render(m.loc),
-		labelStyle.Render("Coords:") + "   " + valStyle.Render(fmt.Sprintf("%.2f°N, %.2f°E", m.lat, m.lon)),
-		labelStyle.Render("Data:") + "     " + valStyle.Render("Open-Meteo (free)"),
+		labelStyle.Render("Location") + "     " + valStyle.Render(m.loc),
+		labelStyle.Render("Coords") + "      " + valStyle.Render(fmt.Sprintf("%.2f°N, %.2f°E", m.lat, m.lon)),
+		labelStyle.Render("Source") + "      " + valStyle.Render("Open-Meteo"),
 		"",
-		labelStyle.Render("[r] refresh  [q] quit"),
+		labelStyle.Render("  [r] refresh  [q] quit"),
 	}
 	infoCard := renderCard("ℹ️  Info", infoLines, cardW)
 
+	waveLine := renderWave(m.waveFrame, availW)
+	header := headerStyle.Width(availW).Render("🌊  Mouja — " + m.loc)
+
 	topRow := lipgloss.JoinHorizontal(lipgloss.Top, weatherCard, strings.Repeat(" ", pad), marineCard)
 	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, forecastCard, strings.Repeat(" ", pad), infoCard)
-
-	header := headerStyle.Width(m.width).Render("🌊  Beach Status — " + m.loc)
 
 	body := lipgloss.JoinVertical(lipgloss.Center,
 		statusLine,
@@ -353,7 +440,7 @@ func (m model) View() string {
 		bottomRow,
 	)
 
-	return lipgloss.JoinVertical(lipgloss.Center, header, body)
+	return lipgloss.JoinVertical(lipgloss.Center, header, waveLine, body)
 }
 
 func main() {
