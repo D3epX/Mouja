@@ -24,20 +24,7 @@ Press `l` to open the location switcher, then type coordinates like `36.8, 2.92,
 
 ### Example output
 
-```
-🌊  Mouja — Aïn Bénian, Algeria
-  ~   ~   ~    ~   ~   ~    ~
-
-🏖️  Great
-
-╭─ ☀️  Weather ─────────────────╮ ╭─ 🌊  Marine ──────────────────╮
-│  Temperature  24.4°C · Warm  │ │  Water  24.0°C · Warm        │
-│  Condition    Clear          │ │  Waves  0.56m NNE · Slight   │
-│  Wind         8.7 km/h E     │ │  Period  5.0s · Moderate     │
-│  Humidity     84%            │ │  Swell  0.56m NNE · Slight   │
-╰──────────────────────────────╯ │  Swell P.  4.2s · Choppy     │
-                                 ╰──────────────────────────────╯
-```
+![screenshot](screenshot.png)
 
 ## Data
 
